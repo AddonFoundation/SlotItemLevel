@@ -160,6 +160,38 @@ local function SetSlotText(slotId, text)
 end
 
 ------------------------------------------------------------
+-- Displayed item level (matches tooltip; avoids squish/base-ilvl issues)
+------------------------------------------------------------
+local function GetDisplayedItemLevel(itemLink)
+  if not itemLink then return nil end
+
+  -- 12.x reliable source: whatever the tooltip shows
+  if C_TooltipInfo and C_TooltipInfo.GetHyperlink then
+    local tip = C_TooltipInfo.GetHyperlink(itemLink)
+    if tip and tip.lines then
+      for _, line in ipairs(tip.lines) do
+        local t = line.leftText
+        if t then
+          local ilvl = t:match("(%d+)")
+          if ilvl and t:lower():find("item level", 1, true) then
+            return tonumber(ilvl)
+          end
+        end
+      end
+    end
+  end
+
+  -- Fallback (may be internal/scaled)
+  if C_Item and C_Item.GetDetailedItemLevelInfo then
+    return C_Item.GetDetailedItemLevelInfo(itemLink)
+  end
+
+  return nil
+end
+
+
+
+------------------------------------------------------------
 -- Update logic
 ------------------------------------------------------------
 local function UpdateSlot(slotId)
@@ -172,18 +204,20 @@ local function UpdateSlot(slotId)
     return
   end
 
-  local ilvl = C_Item.GetDetailedItemLevelInfo(link)
+  local ilvl = GetDisplayedItemLevel(link)
   if ilvl then
     SetSlotText(slotId, ColorizeIlvl(slotId, ilvl))
     return
   end
 
+  -- Async fallback
   local item = Item:CreateFromItemLink(link)
   item:ContinueOnItemLoad(function()
-    local ilvl2 = C_Item.GetDetailedItemLevelInfo(link)
+    local ilvl2 = GetDisplayedItemLevel(link)
     SetSlotText(slotId, ilvl2 and ColorizeIlvl(slotId, ilvl2) or "")
   end)
 end
+
 
 local function UpdateAll(forceLog)
   for slotId in pairs(WANTED) do
