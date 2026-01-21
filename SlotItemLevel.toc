@@ -1,0 +1,10 @@
+## Interface: 120000
+## Title: SlotItemLevel
+## Notes: Shows item level next to character equipment slots.
+## Author: Roffe
+## Version: 12.0.1
+## IconTexture: Interface\AddOns\SlotItemLevel\SlotItemLevel
+## X-Category: Character
+## X-Curse-Project-ID: 0
+
+SlotItemLevel.lua
