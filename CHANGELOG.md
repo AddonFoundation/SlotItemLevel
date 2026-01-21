@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.0.3
+- version bump
 ## 1.0.2
 - added ilvl display to inspect
 - fixed right side margin
