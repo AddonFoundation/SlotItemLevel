@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.2
+- added ilvl display to inspect
+- fixed right side margin
 ## 1.0.1
 - fix version numbering
 - fix item level get

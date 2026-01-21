@@ -3,21 +3,16 @@ local ADDON = ...
 local f = CreateFrame("Frame")
 
 ------------------------------------------------------------
--- State
-------------------------------------------------------------
-local slotButtons = {} -- [slotId] = button
-local slotLabels  = {} -- [button] = FontString
-local hooked = false
-
-------------------------------------------------------------
--- Font config (BIGGER)
+-- Config
 ------------------------------------------------------------
 local FONT_PATH  = "Fonts\\FRIZQT__.TTF"
-local FONT_SIZE  = 14          -- bump to 15/16 if you want
-local FONT_FLAGS = "OUTLINE"   -- "" if you don't want outline
+local FONT_SIZE  = 14
+local FONT_FLAGS = "OUTLINE"
 
 local OFFSET_X = 6
 local OFFSET_Y = -1
+
+local RIGHT_MARGIN = 2
 
 ------------------------------------------------------------
 -- Debug
@@ -52,120 +47,22 @@ local WANTED = {
 }
 
 ------------------------------------------------------------
--- Frame lookup
+-- State per context
 ------------------------------------------------------------
-local function GetItemsParent()
-  if PaperDollItemsFrame then return PaperDollItemsFrame end
-  if CharacterFrame and CharacterFrame.PaperDollItemsFrame then
-    return CharacterFrame.PaperDollItemsFrame
-  end
-  if PaperDollFrame and PaperDollFrame.ItemSlotsFrame then
-    return PaperDollFrame.ItemSlotsFrame
-  end
-end
+local CTX = {
+  player = { unit = "player", slotButtons = {}, slotLabels = {} },
+  inspect = { unit = nil, slotButtons = {}, slotLabels = {} },
+}
+
+local hookedCharacter = false
+local hookedInspect = false
 
 ------------------------------------------------------------
--- Side detection + coloring
-------------------------------------------------------------
-local function IsButtonOnLeftSide(btn)
-  if not btn then return true end
-  local ref = GetItemsParent() or (btn.GetParent and btn:GetParent()) or CharacterFrame
-  if not ref then return true end
-
-  local bx = btn:GetCenter()
-  local rx = ref:GetCenter()
-  if not bx or not rx then return true end
-
-  return bx < rx
-end
-
-local function ColorizeIlvl(slotId, ilvl)
-  local quality = GetInventoryItemQuality("player", slotId)
-  if quality then
-    local r, g, b = C_Item.GetItemQualityColor(quality)
-    return string.format("|cff%02x%02x%02x%d|r", r * 255, g * 255, b * 255, ilvl)
-  end
-  return tostring(ilvl)
-end
-
-------------------------------------------------------------
--- Label creation + positioning (FONT SAFE)
-------------------------------------------------------------
-local function ApplyFontSafe(fs)
-  -- Always start from an existing font (template provides one)
-  -- Then try to apply our custom font; if it fails, keep template font.
-  local ok = pcall(function()
-    fs:SetFont(FONT_PATH, FONT_SIZE, FONT_FLAGS)
-  end)
-  if not ok then
-    -- Fallback: use the normal template font at a slightly larger size
-    local font, _, flags = GameFontNormal:GetFont()
-    fs:SetFont(font, FONT_SIZE, flags or "")
-  end
-end
-
-local function PositionLabel(fs, btn, slotId)
-  fs:ClearAllPoints()
-
-  -- Weapon slots: flare outward
-  if slotId == INVSLOT_MAINHAND then
-    fs:SetPoint("RIGHT", btn, "LEFT", -OFFSET_X, OFFSET_Y) -- left weapon: text left
-    fs:SetJustifyH("RIGHT")
-    return
-  elseif slotId == INVSLOT_OFFHAND then
-    fs:SetPoint("LEFT", btn, "RIGHT", OFFSET_X, OFFSET_Y)  -- right weapon: text right
-    fs:SetJustifyH("LEFT")
-    return
-  end
-
-  -- Normal slots: left column -> text right, right column -> text left
-  if IsButtonOnLeftSide(btn) then
-    fs:SetPoint("LEFT", btn, "RIGHT", OFFSET_X, OFFSET_Y)
-    fs:SetJustifyH("LEFT")
-  else
-    fs:SetPoint("RIGHT", btn, "LEFT", -OFFSET_X, OFFSET_Y)
-    fs:SetJustifyH("RIGHT")
-  end
-end
-
-local function EnsureLabel(btn, slotId)
-  if slotLabels[btn] then return slotLabels[btn] end
-
-  -- IMPORTANT: create from a template so it always has a font
-  local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  ApplyFontSafe(fs)
-  PositionLabel(fs, btn, slotId)
-  fs:SetText("") -- safe now
-
-  slotLabels[btn] = fs
-  return fs
-end
-
-local function RepositionAllLabels()
-  for slotId, btn in pairs(slotButtons) do
-    local fs = slotLabels[btn]
-    if fs then
-      ApplyFontSafe(fs)
-      PositionLabel(fs, btn, slotId)
-    else
-      EnsureLabel(btn, slotId)
-    end
-  end
-end
-
-local function SetSlotText(slotId, text)
-  local btn = slotButtons[slotId]
-  if not btn then return end
-  EnsureLabel(btn, slotId):SetText(text or "")
-end
-
-------------------------------------------------------------
--- Displayed item level (matches tooltip; avoids squish/base-ilvl issues)
+-- Reliable displayed item level (tooltip truth)
 ------------------------------------------------------------
 local function GetDisplayedItemLevel(itemLink)
   if not itemLink then return nil end
 
-  -- 12.x reliable source: whatever the tooltip shows
   if C_TooltipInfo and C_TooltipInfo.GetHyperlink then
     local tip = C_TooltipInfo.GetHyperlink(itemLink)
     if tip and tip.lines then
@@ -181,7 +78,6 @@ local function GetDisplayedItemLevel(itemLink)
     end
   end
 
-  -- Fallback (may be internal/scaled)
   if C_Item and C_Item.GetDetailedItemLevelInfo then
     return C_Item.GetDetailedItemLevelInfo(itemLink)
   end
@@ -189,83 +85,211 @@ local function GetDisplayedItemLevel(itemLink)
   return nil
 end
 
+------------------------------------------------------------
+-- Frame lookup
+------------------------------------------------------------
+local function GetItemsParent(context)
+  if context == "player" then
+    if PaperDollItemsFrame then return PaperDollItemsFrame end
+    if CharacterFrame and CharacterFrame.PaperDollItemsFrame then
+      return CharacterFrame.PaperDollItemsFrame
+    end
+    if PaperDollFrame and PaperDollFrame.ItemSlotsFrame then
+      return PaperDollFrame.ItemSlotsFrame
+    end
+  elseif context == "inspect" then
+    -- These names can vary slightly, so we try multiple.
+    if InspectPaperDollItemsFrame then return InspectPaperDollItemsFrame end
+    if InspectFrame and InspectFrame.PaperDollItemsFrame then
+      return InspectFrame.PaperDollItemsFrame
+    end
+    if InspectPaperDollFrame and InspectPaperDollFrame.ItemSlotsFrame then
+      return InspectPaperDollFrame.ItemSlotsFrame
+    end
+  end
+end
 
+local function GetUnitForContext(context)
+  if context == "player" then return "player" end
+
+  -- Inspect context
+  if InspectFrame and InspectFrame.unit then
+    return InspectFrame.unit
+  end
+  -- Fallback: inspect traditionally targets the current target
+  return "target"
+end
+
+------------------------------------------------------------
+-- Coloring
+------------------------------------------------------------
+local function ColorizeIlvlForUnit(unit, slotId, ilvl)
+  local quality = GetInventoryItemQuality(unit, slotId)
+  if quality then
+    local r, g, b = C_Item.GetItemQualityColor(quality)
+    return string.format("|cff%02x%02x%02x%d|r", r * 255, g * 255, b * 255, ilvl)
+  end
+  return tostring(ilvl)
+end
+
+------------------------------------------------------------
+-- Fonts + positioning
+------------------------------------------------------------
+local function ApplyFontSafe(fs)
+  local ok = pcall(function()
+    fs:SetFont(FONT_PATH, FONT_SIZE, FONT_FLAGS)
+  end)
+  if not ok then
+    local font, _, flags = GameFontNormal:GetFont()
+    fs:SetFont(font, FONT_SIZE, flags or "")
+  end
+end
+
+local function IsButtonOnLeftSide(context, btn)
+  if not btn then return true end
+  local ref = GetItemsParent(context) or (btn.GetParent and btn:GetParent()) or CharacterFrame
+  if not ref then return true end
+
+  local bx = btn:GetCenter()
+  local rx = ref:GetCenter()
+  if not bx or not rx then return true end
+
+  return bx < rx
+end
+
+local function PositionLabel(context, fs, btn, slotId)
+  fs:ClearAllPoints()
+
+  -- Weapon slots: flare outward
+  if slotId == INVSLOT_MAINHAND then
+    fs:SetPoint("RIGHT", btn, "LEFT", -OFFSET_X, OFFSET_Y)
+    fs:SetJustifyH("RIGHT")
+    return
+  elseif slotId == INVSLOT_OFFHAND then
+    fs:SetPoint("LEFT", btn, "RIGHT", 3, OFFSET_Y)
+    fs:SetJustifyH("LEFT")
+    return
+  end
+
+  if IsButtonOnLeftSide(context, btn) then
+    fs:SetPoint("LEFT", btn, "RIGHT", OFFSET_X, OFFSET_Y)
+    fs:SetJustifyH("LEFT")
+  else
+    fs:SetPoint("RIGHT", btn, "LEFT", -(OFFSET_X + RIGHT_MARGIN), OFFSET_Y)
+    fs:SetJustifyH("RIGHT")
+  end
+end
+
+local function EnsureLabel(context, btn, slotId)
+  local labels = CTX[context].slotLabels
+  if labels[btn] then return labels[btn] end
+
+  local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  ApplyFontSafe(fs)
+  PositionLabel(context, fs, btn, slotId)
+  fs:SetText("")
+
+  labels[btn] = fs
+  return fs
+end
+
+local function RepositionAllLabels(context)
+  local buttons = CTX[context].slotButtons
+  local labels = CTX[context].slotLabels
+  for slotId, btn in pairs(buttons) do
+    local fs = labels[btn]
+    if fs then
+      ApplyFontSafe(fs)
+      PositionLabel(context, fs, btn, slotId)
+    else
+      EnsureLabel(context, btn, slotId)
+    end
+  end
+end
+
+local function SetSlotText(context, slotId, text)
+  local btn = CTX[context].slotButtons[slotId]
+  if not btn then return end
+  EnsureLabel(context, btn, slotId):SetText(text or "")
+end
 
 ------------------------------------------------------------
 -- Update logic
 ------------------------------------------------------------
-local function UpdateSlot(slotId)
-  local btn = slotButtons[slotId]
+local function UpdateSlot(context, slotId)
+  local btn = CTX[context].slotButtons[slotId]
   if not btn then return end
 
-  local link = GetInventoryItemLink("player", slotId)
+  local unit = GetUnitForContext(context)
+  local link = GetInventoryItemLink(unit, slotId)
   if not link then
-    SetSlotText(slotId, "")
+    SetSlotText(context, slotId, "")
     return
   end
 
   local ilvl = GetDisplayedItemLevel(link)
   if ilvl then
-    SetSlotText(slotId, ColorizeIlvl(slotId, ilvl))
+    SetSlotText(context, slotId, ColorizeIlvlForUnit(unit, slotId, ilvl))
     return
   end
 
-  -- Async fallback
   local item = Item:CreateFromItemLink(link)
   item:ContinueOnItemLoad(function()
     local ilvl2 = GetDisplayedItemLevel(link)
-    SetSlotText(slotId, ilvl2 and ColorizeIlvl(slotId, ilvl2) or "")
+    SetSlotText(context, slotId, ilvl2 and ColorizeIlvlForUnit(unit, slotId, ilvl2) or "")
   end)
 end
 
-
-local function UpdateAll(forceLog)
+local function UpdateAll(context, forceLog)
   for slotId in pairs(WANTED) do
-    UpdateSlot(slotId)
+    UpdateSlot(context, slotId)
   end
 
   if forceLog then
     local count = 0
-    for _ in pairs(slotButtons) do count = count + 1 end
-    dprint("UpdateAll complete. Slot buttons found: %d", count)
+    for _ in pairs(CTX[context].slotButtons) do count = count + 1 end
+    dprint("UpdateAll(%s) complete. Slot buttons found: %d", context, count)
   end
 end
 
 ------------------------------------------------------------
--- Frame scanning
+-- Scanning
 ------------------------------------------------------------
-local function ScanForSlotButtons(forceLog)
-  local parent = GetItemsParent()
+local function ScanForSlotButtons(context, forceLog)
+  local parent = GetItemsParent(context)
   if not parent then
-    dprint("PaperDoll items frame not found yet.")
+    dprint("[%s] items frame not found yet.", context)
     return
   end
 
   local children = { parent:GetChildren() }
-  dprint("Scanning %d children under %s", #children, parent:GetName() or "<unnamed>")
+  if forceLog then
+    dprint("[%s] Scanning %d children under %s", context, #children, parent:GetName() or "<unnamed>")
+  end
 
+  local buttons = CTX[context].slotButtons
   local newlyFound = 0
+
   for _, child in ipairs(children) do
     if child and child.GetID and child.CreateFontString then
       local id = child:GetID()
-      if WANTED[id] and not slotButtons[id] then
-        slotButtons[id] = child
-        EnsureLabel(child, id)
+      if WANTED[id] and not buttons[id] then
+        buttons[id] = child
+        EnsureLabel(context, child, id)
         newlyFound = newlyFound + 1
-        dprint("Found slot: id=%d name=%s", id, child:GetName() or "<unnamed>")
       end
     end
   end
 
   if forceLog then
     local total = 0
-    for _ in pairs(slotButtons) do total = total + 1 end
-    dprint("Scan complete. New=%d Total=%d", newlyFound, total)
+    for _ in pairs(buttons) do total = total + 1 end
+    dprint("[%s] Scan complete. New=%d Total=%d", context, newlyFound, total)
   end
 end
 
 ------------------------------------------------------------
--- Init / hooks
+-- UI loading + hooks
 ------------------------------------------------------------
 local function EnsureCharacterUILoaded()
   if CharacterFrame then return end
@@ -276,23 +300,45 @@ local function EnsureCharacterUILoaded()
   end
 end
 
-local function HookFrames()
-  if hooked then return end
-  hooked = true
+local function EnsureInspectUILoaded()
+  if InspectFrame then return end
+  if C_AddOns and C_AddOns.LoadAddOn then
+    C_AddOns.LoadAddOn("Blizzard_InspectUI")
+  else
+    LoadAddOn("Blizzard_InspectUI")
+  end
+end
+
+local function HookCharacterFrames()
+  if hookedCharacter then return end
+  hookedCharacter = true
 
   if CharacterFrame then
     CharacterFrame:HookScript("OnShow", function()
-      ScanForSlotButtons(false)
-      RepositionAllLabels()
-      UpdateAll(false)
+      ScanForSlotButtons("player", false)
+      RepositionAllLabels("player")
+      UpdateAll("player", false)
     end)
   end
 
   if PaperDollFrame then
     PaperDollFrame:HookScript("OnShow", function()
-      ScanForSlotButtons(false)
-      RepositionAllLabels()
-      UpdateAll(false)
+      ScanForSlotButtons("player", false)
+      RepositionAllLabels("player")
+      UpdateAll("player", false)
+    end)
+  end
+end
+
+local function HookInspectFrames()
+  if hookedInspect then return end
+  hookedInspect = true
+
+  if InspectFrame then
+    InspectFrame:HookScript("OnShow", function()
+      ScanForSlotButtons("inspect", false)
+      RepositionAllLabels("inspect")
+      UpdateAll("inspect", false)
     end)
   end
 end
@@ -306,12 +352,22 @@ SlashCmdList["SLOTITEMLEVEL"] = function(msg)
   if msg == "debug" then
     DEBUG = not DEBUG
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99SlotItemLevel|r debug = " .. tostring(DEBUG))
+
     C_Timer.After(0, function()
-      -- rescan
-      slotButtons = {}
-      ScanForSlotButtons(true)
-      RepositionAllLabels()
-      UpdateAll(true)
+      CTX.player.slotButtons = {}
+      CTX.player.slotLabels = {}
+      CTX.inspect.slotButtons = {}
+      CTX.inspect.slotLabels = {}
+
+      ScanForSlotButtons("player", true)
+      RepositionAllLabels("player")
+      UpdateAll("player", true)
+
+      EnsureInspectUILoaded()
+      HookInspectFrames()
+      ScanForSlotButtons("inspect", true)
+      RepositionAllLabels("inspect")
+      UpdateAll("inspect", true)
     end)
   else
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99SlotItemLevel|r commands: /sil debug")
@@ -324,28 +380,41 @@ end
 f:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     EnsureCharacterUILoaded()
-    HookFrames()
+    HookCharacterFrames()
 
+    -- initial draw for player
     C_Timer.After(0, function()
-      ScanForSlotButtons(true)
-      RepositionAllLabels()
-      UpdateAll(true)
+      ScanForSlotButtons("player", true)
+      RepositionAllLabels("player")
+      UpdateAll("player", true)
+    end)
+    C_Timer.After(1, function()
+      ScanForSlotButtons("player", false)
+      RepositionAllLabels("player")
+      UpdateAll("player", false)
     end)
 
-    C_Timer.After(1, function()
-      ScanForSlotButtons(false)
-      RepositionAllLabels()
-      UpdateAll(false)
-    end)
+    -- prep inspect (doesn't do anything until Inspect UI is actually opened)
+    EnsureInspectUILoaded()
+    HookInspectFrames()
 
   elseif event == "PLAYER_EQUIPMENT_CHANGED" then
     local slotId = ...
     if WANTED[slotId] then
-      UpdateSlot(slotId)
-      RepositionAllLabels()
+      UpdateSlot("player", slotId)
+      RepositionAllLabels("player")
+    end
+
+  elseif event == "INSPECT_READY" then
+    -- Inspect info arrived; refresh if inspect UI is open
+    if InspectFrame and InspectFrame:IsShown() then
+      ScanForSlotButtons("inspect", false)
+      RepositionAllLabels("inspect")
+      UpdateAll("inspect", false)
     end
   end
 end)
 
 f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+f:RegisterEvent("INSPECT_READY")
