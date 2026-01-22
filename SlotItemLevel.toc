@@ -2,10 +2,11 @@
 ## Title: SlotItemLevel
 ## Notes: Shows item level next to character and inspect equipment slots.
 ## Author: Roffe
-## Version: 1.0.3
+## Version: 1.0.4
 ## IconTexture: Interface\AddOns\SlotItemLevel\SlotItemLevel
 ## X-Category: Character
 ## X-Curse-Project-ID: 0
 
 SlotItemLevel.lua
+
 
